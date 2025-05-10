@@ -6,6 +6,8 @@ import pygame
 from PIL import ImageTk, Image
 from pygame import mixer
 
+os.environ["SDL_AUDIODRIVER"] = os.getenv("SDL_AUDIODRIVER", "alsa")
+
 PLAY: str = "play"
 PAUSE: str = "pause"
 RESUME: str = "resume"
@@ -16,6 +18,7 @@ song_list: list[str]
 last_callback = None
 is_stop_pressed = False
 current_index: int = 0
+audio_available = True  # New flag to track if audio is available
 
 song_queue: list[threading.Thread]
 active_song: asyncio.Task
@@ -68,7 +71,6 @@ async def play_song(song: str):
     global active_song
 
     try:
-
         active_song = asyncio.create_task(start_playing(song))
         player_callback('play')
         await active_song
@@ -79,6 +81,12 @@ async def play_song(song: str):
 
 
 async def start_playing(song: str):
+    if not audio_available:
+        # Simulate playing for a short time if no audio is available
+        print(f"Simulating playing: {song}")
+        await asyncio.sleep(1)
+        return
+    
     mixer.music.set_endevent(END_EVENT)
     mixer.music.load(song)
     mixer.music.play()
@@ -102,7 +110,8 @@ def on_play():
 
 
 def pause():
-    mixer.music.pause()
+    if audio_available:
+        mixer.music.pause()
     player_callback(PAUSE)
 
 
@@ -112,7 +121,8 @@ def on_pause():
 
 
 def resume():
-    mixer.music.unpause()
+    if audio_available:
+        mixer.music.unpause()
     player_callback(RESUME)
 
 
@@ -122,9 +132,11 @@ def on_resume():
 
 
 def next_song():
-    active_song.cancel("play next song requested.")
+    if active_song:
+        active_song.cancel("play next song requested.")
     player_callback("next")
-    mixer.music.stop()
+    if audio_available:
+        mixer.music.stop()
     play_next_song()
 
 
@@ -138,15 +150,20 @@ def previous_song():
 
     index = current_index - 1
     if index >= 0:
-        active_song.cancel("play previous song requested.")
+        if active_song:
+            active_song.cancel("play previous song requested.")
         current_index = index
-        mixer.music.stop()
+        if audio_available:
+            mixer.music.stop()
         asyncio.run_coroutine_threadsafe(play_song(song_list[current_index]), player_loop)
         player_callback("previous")
 
 
 def on_previous_song():
-    if mixer.music.get_busy():
+    if audio_available and mixer.music.get_busy():
+        pause_button.config(state="normal")
+        play_button.config(state="disabled")
+    else:
         pause_button.config(state="normal")
         play_button.config(state="disabled")
 
@@ -166,8 +183,10 @@ def stop_player():
     # global is_stop_pressed
 
     # is_stop_pressed = True
-    active_song.cancel("stop music player requested.")
-    mixer.music.stop()
+    if active_song:
+        active_song.cancel("stop music player requested.")
+    if audio_available:
+        mixer.music.stop()
     play_button.config(command=init_player, state='normal')
     pause_button.config(state='disabled')
     stop_button.config(state='disabled')
@@ -282,7 +301,18 @@ running_song = tk.Label(
 running_song.place(x=0, y=1)
 
 pygame.init()
-mixer.init()
+try:
+    mixer.init()
+    print("Audio mixer initialized successfully")
+except Exception as e:
+    print(f"WARNING: Could not initialize audio mixer: {e}")
+    print("The game will continue without sound.")
+    audio_available = False  # Set the flag when mixer init fails
+
+# Add a notification in the UI when audio isn't available
+if not audio_available:
+    windows.after(1000, lambda: running_song.config(text="*** AUDIO UNAVAILABLE - VISUAL MODE ONLY ***"))
+    windows.after(3000, lambda: running_song.config(text="Choose song (no audio available)"))
 
 player_loop = asyncio.new_event_loop()
 player_thread = threading.Thread(target=start_background_loop, args=(player_loop,), daemon=True)
